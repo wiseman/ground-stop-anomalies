@@ -1,0 +1,4 @@
+Loaded 14803 runways
+Read positions of 1 aircraft
+Rejected takeoff: AcState { pos: Point(Coordinate { x: -118.385463, y: 33.939297 }), alt: 0.0, gs: 18.5, ts: 2022-01-10T22:37:50Z }
+https://globe.adsbexchange.com/?icao=a081ca&zoom=7.0&showTrace=2022-01-10&startTime=22:32&endTime=22:39&trackLabels
