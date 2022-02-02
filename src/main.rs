@@ -171,7 +171,7 @@ fn point_coords(geom: &Geometry) -> Point<f64> {
 
 /// Loads the CSV file containing runway data.
 ///
-/// I'm using the runways.csv file available at https://ourairports.com/data/
+/// I'm using the runways.csv file available at <https://ourairports.com/data/>
 fn load_runway_data() -> Vec<Runway> {
     let runway_data_file = File::open("/Users/wiseman/data/runways.csv").unwrap();
     let mut runway_buffered_reader = BufReader::new(runway_data_file);
