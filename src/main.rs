@@ -14,14 +14,23 @@ use std::{
 
 use serde_json::value::Value as JsonValue;
 
+/// Aircraft state at a point in time.
 #[derive(Debug, Clone, PartialEq)]
 struct AcState {
+    /// Position.
     pub pos: Point<f64>,
+    /// Barometric altitude.
     pub alt: f64,
+    /// Ground speed.
     pub gs: f64,
     pub ts: DateTime<Utc>,
 }
 
+/// Runway data.
+///
+/// Note that each physical runway is two logical runways (with opposing heading
+/// and differen start positions), and each logical runway is a different Runway
+/// struct.  E.g. KLAX runways 07L and 25R are the same physical runway.
 #[derive(Debug, Clone, PartialEq)]
 struct Runway {
     pub airport_ident: String,
@@ -34,14 +43,16 @@ struct Runway {
     pub line: Line<f64>,
 }
 
+/// Represents a rejected takeoff.
 #[derive(Debug, Clone, PartialEq)]
-struct Rejection {
+struct RejectedTakeoff {
     pub aircraft_hex: String,
+    /// The state of the aircraft at the time we detected the rejection.
     pub reject_state: AcState,
     pub runway: Runway,
 }
 
-impl Rejection {
+impl RejectedTakeoff {
     pub fn adsbx_url(&self) -> String {
         let ts = self.reject_state.ts;
         let start_time = ts.checked_sub_signed(chrono::Duration::minutes(5)).unwrap();
@@ -57,6 +68,7 @@ impl Rejection {
     }
 }
 
+/// Loads the GeoJSON file containing ADS-B data for all aircraft.
 fn load_aircraft_data() -> HashMap<String, Vec<AcState>> {
     let start = Instant::now();
     let geojson_file = File::open("/Users/wiseman/data/ground-stop-20220110.geojson").unwrap();
@@ -72,6 +84,7 @@ fn load_aircraft_data() -> HashMap<String, Vec<AcState>> {
         start.elapsed().as_millis() as f64 / 1000.0
     );
     let aircraft = process_geojson(&geojson);
+    // Print some stats.
     println!(
         "Read {} positions of {} aircraft",
         aircraft.values().map(|v| v.len()).sum::<usize>(),
@@ -92,6 +105,9 @@ fn load_aircraft_data() -> HashMap<String, Vec<AcState>> {
     aircraft
 }
 
+/// Parses the GeoJSON into aircraft states.
+///
+/// Returns a map from aircraft hex to a vector of states.
 fn process_geojson(gj: &GeoJson) -> HashMap<String, Vec<AcState>> {
     let mut aircraft = HashMap::new();
     match *gj {
@@ -100,10 +116,12 @@ fn process_geojson(gj: &GeoJson) -> HashMap<String, Vec<AcState>> {
                 if let Some(ref geom) = feature.geometry {
                     let pos = point_coords(geom);
                     let p = feature.properties.as_ref().unwrap();
+                    // If it doesn't have a hex property just die.
                     let icao = p["hex"].as_str().unwrap();
                     // if icao != "a081ca" {
                     //     continue;
                     // }
+                    // If it doesn't have alt_baro or gs then skip it.
                     if !p.contains_key("alt_baro") || p["alt_baro"].is_null() {
                         continue;
                     }
@@ -125,12 +143,15 @@ fn process_geojson(gj: &GeoJson) -> HashMap<String, Vec<AcState>> {
             }
         }
         _ => {
-            panic!("Unexpected thingy");
+            panic!("Unexpected geojson thingy");
         }
     }
     aircraft
 }
 
+/// Parses the altitude from the "alt_baro" JSON property.
+///
+/// "ground" is converted to an altitude of 0.0.
 fn parse_alt(alt_str: &serde_json::value::Value) -> f64 {
     match alt_str {
         // JsonValue::Number(_) => alt_str.as_f64().unwrap(),
@@ -140,7 +161,7 @@ fn parse_alt(alt_str: &serde_json::value::Value) -> f64 {
     }
 }
 
-/// Process GeoJSON geometries
+/// Parse an aircraft's GeoJSON position into a [geo::Point].
 fn point_coords(geom: &Geometry) -> Point<f64> {
     match &geom.value {
         Value::Point(pos) => point!(x: pos[0], y: pos[1]),
@@ -148,6 +169,9 @@ fn point_coords(geom: &Geometry) -> Point<f64> {
     }
 }
 
+/// Loads the CSV file containing runway data.
+///
+/// I'm using the runways.csv file available at https://ourairports.com/data/
 fn load_runway_data() -> Vec<Runway> {
     let runway_data_file = File::open("/Users/wiseman/data/runways.csv").unwrap();
     let mut runway_buffered_reader = BufReader::new(runway_data_file);
@@ -159,49 +183,16 @@ fn load_runway_data() -> Vec<Runway> {
     process_runways(&runway_contents)
 }
 
+/// Filter out any runways with longitude east of this since we're just looking
+/// at the west coast of the U.S.
 const RUNWAY_MAX_LONGITUDE: f64 = -107.0;
 
-fn runway_from_csv_values(
-    airport_ident: &str,
-    runway_ident: Option<&str>,
-    lat: Option<&str>,
-    lon: Option<&str>,
-    ele_ft: Option<&str>,
-    hdg: Option<&str>,
-    length_ft: Option<&str>,
-    width_ft: Option<&str>,
-) -> Option<Runway> {
-    if lat.is_none() || lon.is_none() || hdg.is_none() {
-        return None;
-    }
-    if let (Some(lat), Some(lon), Some(elevation), Some(heading), Some(length), Some(width_ft)) = (
-        lat.and_then(|v| v.parse::<f64>().ok()),
-        lon.and_then(|v| v.parse::<f64>().ok()),
-        ele_ft.and_then(|v| v.parse::<f64>().ok()),
-        hdg.and_then(|v| v.parse::<f64>().ok()),
-        length_ft.and_then(|v| v.parse::<f64>().ok()),
-        width_ft.and_then(|v| v.parse::<f64>().ok()),
-    ) {
-        let start = point!(x: lon, y: lat);
-        let end = start.haversine_destination(heading, length / 3.28);
-        Some(Runway {
-            airport_ident: airport_ident.to_string(),
-            runway_ident: runway_ident.map(|v| v.to_string()),
-            pos: point!(x: lon, y: lat),
-            elevation_ft: elevation,
-            heading,
-            length_m: length / 3.28,
-            width_m: width_ft / 3.28,
-            line: Line::new(start, end),
-        })
-    } else {
-        None
-    }
-}
-
+/// Parses the runways.csv data into a vector of [Runway]s.
 fn process_runways(runway_str: &str) -> Vec<Runway> {
     let mut runways = vec![];
     let runway_csv = quick_csv::Csv::from_string(runway_str);
+    // Each row has data for one physical runway, which we turn into two logical
+    // runways.
     for row in runway_csv {
         let r = row.unwrap();
         let mut cols = r.columns().unwrap();
@@ -252,9 +243,52 @@ fn process_runways(runway_str: &str) -> Vec<Runway> {
     runways
 }
 
+/// Parses runway.csv values into a [Runway], if possible.
+#[allow(clippy::too_many_arguments)]
+fn runway_from_csv_values(
+    airport_ident: &str,
+    runway_ident: Option<&str>,
+    lat: Option<&str>,
+    lon: Option<&str>,
+    ele_ft: Option<&str>,
+    hdg: Option<&str>,
+    length_ft: Option<&str>,
+    width_ft: Option<&str>,
+) -> Option<Runway> {
+    if lat.is_none() || lon.is_none() || hdg.is_none() {
+        return None;
+    }
+    if let (Some(lat), Some(lon), Some(elevation), Some(heading), Some(length), Some(width_ft)) = (
+        lat.and_then(|v| v.parse::<f64>().ok()),
+        lon.and_then(|v| v.parse::<f64>().ok()),
+        ele_ft.and_then(|v| v.parse::<f64>().ok()),
+        hdg.and_then(|v| v.parse::<f64>().ok()),
+        length_ft.and_then(|v| v.parse::<f64>().ok()),
+        width_ft.and_then(|v| v.parse::<f64>().ok()),
+    ) {
+        // Build a geo::Line from the start of the runway to the end so we can
+        // easily check the distance from any point to the runway.
+        let start = point!(x: lon, y: lat);
+        let end = start.haversine_destination(heading, length / 3.28);
+        Some(Runway {
+            airport_ident: airport_ident.to_string(),
+            runway_ident: runway_ident.map(|v| v.to_string()),
+            pos: point!(x: lon, y: lat),
+            elevation_ft: elevation,
+            heading,
+            length_m: length / 3.28,
+            width_m: width_ft / 3.28,
+            line: Line::new(start, end),
+        })
+    } else {
+        None
+    }
+}
+
 const NUM_ACCELS_THRESHOLD: u32 = 3;
 const GS_THRESHOLD: f64 = 50.0;
 
+/// Returns the [Runway] a point is on, if any.
 fn on_runway(runways: &[Runway], pos: Point<f64>) -> Option<&Runway> {
     for rwy in runways {
         let closest = rwy.line.closest_point(&pos);
@@ -282,6 +316,7 @@ pub fn heading_diff(a: f64, b: f64) -> f64 {
 
 const FINAL_APPROACH_HEADING_DEG_EPSILON: f64 = 3.0;
 
+/// Determines the runway an aircraft is approaching, if any.
 fn close_to_and_in_line_with_runway(
     runways: &[Runway],
     pos: Point<f64>,
@@ -294,6 +329,8 @@ fn close_to_and_in_line_with_runway(
         // heading_diff is 0.0 if the aircraft is moving perfectly parallel with
         // the runway.
         let theta = deg2rad(heading_diff(bearing_to_runway, rwy.heading));
+        // We use cos(theta) to scale the max allowable distance from the
+        // threshold of the runway to the aircraft.
         if distance_m <= 3000.0 * theta.cos()
             && heading_diff(rwy.heading, heading) < FINAL_APPROACH_HEADING_DEG_EPSILON
         {
@@ -307,11 +344,12 @@ fn deg2rad(deg: f64) -> f64 {
     deg * std::f64::consts::PI / 180.0
 }
 
+/// Checks a single aircraft's history for a rejected takeoff.
 fn detect_rejected_takeoff(
     runways: &[Runway],
     aircraft_hex: &str,
     history: &[AcState],
-) -> Option<Rejection> {
+) -> Option<RejectedTakeoff> {
     let mut num_accels = 0;
     let mut last_gs = 0.0;
     for s in history {
@@ -322,7 +360,7 @@ fn detect_rejected_takeoff(
                 }
                 if s.gs < last_gs {
                     if num_accels >= NUM_ACCELS_THRESHOLD && last_gs > GS_THRESHOLD {
-                        return Some(Rejection {
+                        return Some(RejectedTakeoff {
                             aircraft_hex: aircraft_hex.to_string(),
                             reject_state: s.clone(),
                             runway: runway.clone(),
@@ -340,6 +378,7 @@ fn detect_rejected_takeoff(
     None
 }
 
+/// Represents an aborted landing.
 #[derive(Debug, PartialEq, Clone)]
 pub struct GoAround {
     aircraft_hex: String,
@@ -367,6 +406,15 @@ fn heading(p1: Point<f64>, p2: Point<f64>) -> f64 {
     p1.bearing(p2)
 }
 
+/// Checks whether an aircraft is considered to be on final approach at a
+/// specific datapoint.
+///
+/// We'll say an aircraft is on final if
+///
+/// 1. It's between 0 and 2000 feet altitude.
+/// 2. It's close to and in-line with a runway.
+/// 3. If we look ahead 4 data points it's at least 200 feet lower than it is
+///    now.
 fn on_final(
     runways: &[Runway],
     _aircraft_hex: &str,
@@ -389,6 +437,15 @@ fn on_final(
     None
 }
 
+/// Checks whether an aircraft that is on final is considered to have _not
+/// landed_ for at least the next 5 minutes.
+///
+/// We'll say we know an aircraft that is already on final didn't land if both
+/// of these conditions are true:
+///
+/// 1. 5 minutes from now it's at a higher altitude than it is now.
+/// 2. At no time between now and 5 minutes from now was it either low enough to
+///    be on the runway or slow enough to be taxiiing.
 fn did_not_land(history: &[AcState], i: usize, runway: &Runway) -> bool {
     let cur_time = history[i].ts;
     let future_time = cur_time
@@ -409,6 +466,11 @@ fn did_not_land(history: &[AcState], i: usize, runway: &Runway) -> bool {
     }
 }
 
+/// Checks whether a single aircraft aborted a landing at any point in its
+/// history.
+///
+/// We'll consider it a possible go-around if the aircraft was on final and then
+/// didn't land.
 fn detect_go_arounds(
     runways: &[Runway],
     aircraft_hex: &str,
@@ -433,12 +495,32 @@ fn main() {
     let runways = load_runway_data();
     aircraft.par_iter().for_each(|(aircraft_hex, history)| {
         if let Some(rejection) = detect_rejected_takeoff(&runways, aircraft_hex, history) {
-            println!("==== Rejected takeoff:\n  {:?}", rejection.runway);
-            println!("  {}\n", rejection.adsbx_url());
+            println!("==== Rejected takeoff    {}", rejection.reject_state.ts);
+            println!(
+                "  {} {} {}",
+                &rejection.aircraft_hex,
+                &rejection.runway.airport_ident,
+                &rejection
+                    .runway
+                    .runway_ident
+                    .clone()
+                    .unwrap_or_else(|| "".to_string())
+            );
+            println!("  {}\n", &rejection.adsbx_url());
         }
         if let Some(go_around) = detect_go_arounds(&runways, aircraft_hex, history) {
-            println!("==== Go around:\n  {:?}", go_around.runway);
-            println!("  {}\n", go_around.adsbx_url());
+            println!("==== Go around           {}", go_around.reject_state.ts);
+            println!(
+                "  {} {} {}",
+                &go_around.aircraft_hex,
+                &go_around.runway.airport_ident,
+                &go_around
+                    .runway
+                    .runway_ident
+                    .clone()
+                    .unwrap_or_else(|| "".to_string())
+            );
+            println!("  {}\n", &go_around.adsbx_url());
         }
     });
 }
