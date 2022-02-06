@@ -102,6 +102,18 @@ fn load_aircraft_data() -> HashMap<String, Vec<AcState>> {
         .flatten()
         .fold(f64::NAN, f64::min);
     println!("Min aircraft lon: {}", min_lon);
+    let min_datetime = aircraft
+    .values()
+    .map(|v| v.iter().map(|s| s.ts))
+    .flatten()
+    .fold(chrono::MAX_DATETIME, |min, ts| min.min(ts));
+    let max_datetime = aircraft
+    .values()
+    .map(|v| v.iter().map(|s| s.ts))
+    .flatten()
+    .fold(chrono::MIN_DATETIME, |max, ts| max.max(ts));
+    println!("Min datetime: {}", min_datetime);
+    println!("Max datetime: {}", max_datetime);
     aircraft
 }
 
